@@ -37,26 +37,14 @@ export async function generateDailyQuests(lang: Language = 'en'): Promise<Quest[
     Language: ${languagePrompts[lang]}.
     
     CORE PHILOSOPHY:
-    - Quests must be achievable and not socially awkward or "cringe". 
-    - They should be funny, positive, and add a small bit of meaning or joy to the user's day.
-    - NO boring academic tasks. NO bugging strangers for "random" things.
-    - Focus on "wholesome fun" and "Main Character Energy" that makes the user feel cool, not weird.
+    - Quests must be achievable and not socially awkward. 
+    - They should be funny, positive, and add value or joy.
+    - Focus on "Main Character Energy".
     
-    QUEST TYPES TO INCLUDE:
-    - IMAGE QUEST: Find something interesting or create a funny scene. 
-      Examples: "Find a tree that looks like it's judging you", "Give a tiny paper hat to a piece of fruit", "Find a building with a 'face'".
-    - TEXT QUEST: Creative writing or witty observations.
-      Examples: "Write a short 'thank you' note to your shoes for carrying you today", "Invent a funny backstory for the first object you see on your left", "Draft a 1-sentence motivation for a lazy cat".
-    - ACTION QUEST: Small, fun interactions with the environment.
-      Examples: "Leave a positive sticky note in a public place", "Learn how to say 'you are awesome' in a new language", "Organize your apps by color for 1 minute".
-    - "IMPOSSIBLE" (Hard) but funny: Exaggerated goals that are still lighthearted.
-      Example: "Find a dog that looks like it has a corporate 9-to-5 job", "Spot a car that looks exactly like a specific snack".
+    TYPES: IMAGE (creative photos), TEXT (witty writing), ACTION (small real-world fun).
+    TONE: Witty, cool, supportive. No AI-robot speak.
 
-    TONE: 
-    - Witty, playful, encouraging, and sharp. 
-    - Speak like a cool, supportive friend who loves a good joke.
-
-    Return the quests in the specified JSON schema. Ensure variety in types (IMAGE, TEXT, CHOICE).`,
+    Return the quests in the specified JSON schema.`,
     config: {
       responseMimeType: "application/json",
       responseSchema: QUEST_SCHEMA
@@ -78,21 +66,53 @@ export async function generateDailyQuests(lang: Language = 'en'): Promise<Quest[
   }
 }
 
+export async function translateQuests(quests: Quest[], targetLang: Language): Promise<Quest[]> {
+  const questData = quests.map(q => ({ id: q.id, title: q.title, description: q.description }));
+  
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: `Translate the following quest titles and descriptions to ${languagePrompts[targetLang]}. 
+    Keep the humor and tone intact. 
+    Data: ${JSON.stringify(questData)}`,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            id: { type: Type.STRING },
+            title: { type: Type.STRING },
+            description: { type: Type.STRING }
+          }
+        }
+      }
+    }
+  });
+
+  const translatedData = JSON.parse(response.text);
+  return quests.map(q => {
+    const translation = translatedData.find((t: any) => t.id === q.id);
+    return translation ? { ...q, title: translation.title, description: translation.description } : q;
+  });
+}
+
 export async function verifySubmission(
   quest: Quest, 
   submission: { text?: string, imageBase64?: string },
   lang: Language = 'en'
 ): Promise<{ success: boolean; feedback: string }> {
-  const parts: any[] = [{ text: `Act as a STRICT but FAIR "Quest Guardian". 
+  const parts: any[] = [{ text: `Act as a BRUTALLY STRICT and cynical "Quest Guardian". 
   Quest: ${quest.title} - ${quest.description}
   User submitted evidence: ${submission.text || "An image proof"}
   Language for response: ${languagePrompts[lang]}.
   
   STRICTNESS PROTOCOL:
-  1. REJECT if the submission is lazy, generic, or clearly ignored the prompt.
-  2. If an image is required, verify it actually matches the request (e.g., if it asked for a hat on a fruit, look for it).
-  3. If they succeed, provide a witty, rewarding compliment.
-  4. If they fail, be firm but funny about why they didn't meet the "Guild Standards".
+  1. REJECT (success: false) if the submission is even slightly lazy, generic, or looks like a cheat.
+  2. If an image is just a blank wall, floor, or blurry mess: REJECT immediately.
+  3. If text is under 15 characters (unless it's a specific choice): REJECT.
+  4. Be a "hard-to-please" critic. Only 10/10 effort gets a pass.
+  5. Mock them if they fail. Compliment them with respect if they actually put in the work.
   
   Return JSON with "success" (boolean) and "feedback" (string).` }];
 

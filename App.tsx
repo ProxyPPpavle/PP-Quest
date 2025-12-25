@@ -1,10 +1,10 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Quest, UserProfile, QuestDifficulty, QuestType, Language } from './types';
-import { generateDailyQuests, verifySubmission } from './geminiService';
+import { generateDailyQuests, verifySubmission, translateQuests } from './geminiService';
 import QuestCard from './components/QuestCard';
 import SubmissionModal from './components/SubmissionModal';
-import { Trophy, Zap, History, BarChart3, LayoutGrid, Crown, RefreshCcw, Share2, Heart, Medal, CheckCircle, ArrowRight, Languages } from 'lucide-react';
+import { Trophy, Zap, History, BarChart3, LayoutGrid, Crown, RefreshCcw, Share2, Heart, Medal, CheckCircle, ArrowRight, Languages, Loader2 } from 'lucide-react';
 
 const translations: Record<Language, any> = {
   en: {
@@ -25,7 +25,8 @@ const translations: Record<Language, any> = {
     grid: "Grid",
     intel: "Intel",
     logs: "LOGS",
-    copied: "Link copied to clipboard!"
+    copied: "Link copied to clipboard!",
+    translating: "Syncing Language..."
   },
   sr: {
     sync: "Mreža Sinhronizovana",
@@ -45,7 +46,8 @@ const translations: Record<Language, any> = {
     grid: "Mreža",
     intel: "Info",
     logs: "ZAPISI",
-    copied: "Link kopiran u clipboard!"
+    copied: "Link kopiran!",
+    translating: "Prevođenje..."
   },
   es: {
     sync: "Red Sincronizada",
@@ -65,7 +67,8 @@ const translations: Record<Language, any> = {
     grid: "Cuadrícula",
     intel: "Intel",
     logs: "REGISTROS",
-    copied: "¡Enlace copiado!"
+    copied: "¡Enlace copiado!",
+    translating: "Traduciendo..."
   },
   fr: {
     sync: "Réseau Synchronisé",
@@ -85,12 +88,13 @@ const translations: Record<Language, any> = {
     grid: "Grille",
     intel: "Intel",
     logs: "JOURNAUX",
-    copied: "Lien copié!"
+    copied: "Lien copié!",
+    translating: "Traduction..."
   }
 };
 
 const INITIAL_PROFILE: UserProfile = {
-  username: "New Agent",
+  username: "Agent Zero",
   stats: {
     completedCount: 0,
     completedEasy: 0,
@@ -113,6 +117,7 @@ const App: React.FC = () => {
   const [profile, setProfile] = useState<UserProfile>(INITIAL_PROFILE);
   const [activeQuest, setActiveQuest] = useState<Quest | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isTranslating, setIsTranslating] = useState(false);
   const [view, setView] = useState<'home' | 'stats' | 'history'>('home');
 
   const initRef = useRef(false);
@@ -151,15 +156,13 @@ const App: React.FC = () => {
   };
 
   const handleRefreshQuests = async (isManual = false) => {
-    // If manual reset, check limits based on premium (2 resets) vs free (none - free only gets 1 skip)
-    // Actually, following prompt: Premium gets 2 instant resets daily.
     if (isManual) {
       if (!profile.isPremium) {
-        alert("Resets are for Premium agents only! Use Skips instead.");
+        alert("Board refresh is a Premium feature! Try individual skips.");
         return;
       }
       if (profile.dailySkips <= 0) {
-        alert("Daily reset limit reached!");
+        alert("Daily refresh limit reached!");
         return;
       }
     }
@@ -176,23 +179,39 @@ const App: React.FC = () => {
   };
 
   const handleSkipQuest = async (id: string) => {
-    if (profile.dailySkips > 0 || profile.isPremium) {
-      setQuests(prev => prev.filter(q => q.id !== id));
+    if (profile.dailySkips > 0) {
+      const qToReplace = quests.find(q => q.id === id);
+      if (!qToReplace) return;
+      
+      setIsTranslating(true); // Reuse UI state
       const replacement = await generateDailyQuests(profile.language);
-      setQuests(prev => [...prev, replacement[0]]);
+      setQuests(prev => prev.map(q => q.id === id ? replacement[0] : q));
       setProfile(prev => ({ 
         ...prev, 
         dailySkips: prev.dailySkips - 1 
       }));
+      setIsTranslating(false);
     } else {
-      alert("No skips left!");
+      alert("No skips left for today!");
     }
   };
 
-  const handleLanguageChange = (lang: Language) => {
+  const handleLanguageChange = async (lang: Language) => {
+    if (lang === profile.language) return;
+    
+    // 1. Update UI language immediately
     setProfile(prev => ({ ...prev, language: lang }));
-    // Optionally refresh quests in new language
-    handleRefreshQuests(false);
+    
+    // 2. Translate current quests in background
+    setIsTranslating(true);
+    try {
+      const translated = await translateQuests(quests, lang);
+      setQuests(translated);
+    } catch (e) {
+      console.error("Translation failed", e);
+    } finally {
+      setIsTranslating(false);
+    }
   };
 
   const handleQuestSave = (id: string) => {
@@ -204,22 +223,15 @@ const App: React.FC = () => {
   };
 
   const handleShare = async (data: any, isStats = false) => {
-    let shareText = "";
-    if (isStats) {
-      shareText = `My PP Quest Stats: Cleared ${profile.stats.completedCount} quests, reached ${profile.stats.totalPoints} XP. Join me!`;
-    } else {
-      shareText = `Check out this quest: "${data.title}" on PP Quest!`;
-    }
+    let shareText = isStats 
+      ? `My PP Quest Intel: ${profile.stats.completedCount} Missions Clear | ${profile.stats.totalPoints} XP.`
+      : `New Mission Detected: "${data.title}"`;
     
     const shareUrl = window.location.origin;
 
     if (navigator.share) {
       try {
-        await navigator.share({
-          title: 'PP Quest',
-          text: shareText,
-          url: shareUrl
-        });
+        await navigator.share({ title: 'PP Quest', text: shareText, url: shareUrl });
       } catch (err) {
         navigator.clipboard.writeText(`${shareText} ${shareUrl}`);
         showToast(t.copied);
@@ -239,7 +251,7 @@ const App: React.FC = () => {
         ...activeQuest, 
         completed: true, 
         timestamp: Date.now(),
-        userSubmission: submission.text || (submission.imageBase64 ? "Image Proof Sent" : undefined),
+        userSubmission: submission.text || (submission.imageBase64 ? "Captured Evidence" : undefined),
         aiFeedback: result.feedback
       };
       
@@ -265,13 +277,11 @@ const App: React.FC = () => {
     return result;
   };
 
-  const pendingCount = quests.filter(q => !q.completed).length;
-
   const renderHome = () => (
     <div className="space-y-6 animate-in">
       <div className="p-6 glass border-emerald-500/10 flex flex-col md:flex-row justify-between items-center gap-6">
         <div className="flex items-center gap-4">
-          <div className="w-14 h-14 bg-zinc-800 rounded-2xl flex items-center justify-center text-white font-bold text-xl">
+          <div className="w-14 h-14 bg-zinc-800 rounded-2xl flex items-center justify-center text-white font-bold text-xl border border-white/5">
             {profile.username[0]}
           </div>
           <div>
@@ -288,26 +298,30 @@ const App: React.FC = () => {
         </div>
         
         <div className="flex items-center gap-3">
-          <div className="text-center p-2.5 px-5 glass bg-white/5">
+          <div className="text-center p-2.5 px-5 glass bg-white/5 border-white/10 min-w-[100px]">
              <p className="text-[9px] text-zinc-500 font-bold uppercase tracking-widest mb-1">
                {profile.isPremium ? t.resets : t.skips}
              </p>
              <div className="flex gap-1.5 justify-center">
                {[...Array(profile.isPremium ? 2 : 1)].map((_, i) => (
-                 <div key={i} className={`w-2 h-2 rounded-full ${i < profile.dailySkips ? 'bg-emerald-400' : 'bg-zinc-800'}`} />
+                 <div key={i} className={`w-2.5 h-2.5 rounded-full ${i < profile.dailySkips ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]' : 'bg-zinc-800'}`} />
                ))}
              </div>
           </div>
-          <button onClick={() => handleRefreshQuests(true)} className="p-3.5 glass hover:bg-white/10 transition-colors">
-            <RefreshCcw size={20} className={loading ? 'animate-spin text-emerald-400' : 'text-emerald-400'} />
-          </button>
+          {profile.isPremium && (
+            <button onClick={() => handleRefreshQuests(true)} className="p-3.5 glass hover:bg-white/10 transition-colors">
+              <RefreshCcw size={20} className={loading ? 'animate-spin text-emerald-400' : 'text-emerald-400'} />
+            </button>
+          )}
         </div>
       </div>
 
       <div className="space-y-4">
         <div className="flex justify-between items-center px-1">
-          <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">{t.available}</h3>
-          <span className="xp-badge">{pendingCount} {t.pending}</span>
+          <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2">
+            {t.available} {isTranslating && <Loader2 size={12} className="animate-spin text-zinc-500" />}
+          </h3>
+          <span className="xp-badge">{quests.filter(q => !q.completed).length} {t.pending}</span>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {loading ? (
@@ -329,82 +343,6 @@ const App: React.FC = () => {
     </div>
   );
 
-  const renderStats = () => (
-    <div className="space-y-8 animate-in">
-      <div className="flex justify-between items-center">
-        <h2 className="text-xl font-bold">{t.stats}</h2>
-        <button onClick={() => handleShare(null, true)} className="flex items-center gap-2 px-4 py-2 glass font-bold text-xs uppercase tracking-wider">
-          <Share2 size={16} /> {t.share}
-        </button>
-      </div>
-
-      <div className="grid grid-cols-2 gap-4">
-        {[
-          { icon: <CheckCircle className="text-emerald-400" />, val: profile.stats.completedCount, label: t.cleared },
-          { icon: <Medal className="text-blue-400" />, val: profile.stats.totalPoints, label: 'XP Points' },
-          { icon: <Zap className="text-amber-400" />, val: profile.stats.currentStreak, label: t.streak },
-          { icon: <Trophy className="text-rose-400" />, val: profile.stats.bestStreak, label: t.peak },
-        ].map((stat, i) => (
-          <div key={i} className="glass p-6 text-center space-y-2 border-white/5">
-            <div className="flex justify-center mb-1">{stat.icon}</div>
-            <p className="text-2xl font-bold">{stat.val}</p>
-            <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">{stat.label}</p>
-          </div>
-        ))}
-      </div>
-
-      <div className="glass p-6 space-y-5">
-        <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">{t.details}</h3>
-        <div className="space-y-4">
-          {[
-            { label: 'Easy Missions', count: profile.stats.completedEasy, color: 'bg-emerald-500' },
-            { label: 'Medium Missions', count: profile.stats.completedMedium, color: 'bg-blue-500' },
-            { label: 'Hard Missions', count: profile.stats.completedHard, color: 'bg-rose-500' },
-          ].map((item, i) => (
-            <div key={i} className="space-y-2">
-              <div className="flex justify-between text-xs font-bold uppercase tracking-tight">
-                <span className="text-zinc-400">{item.label}</span>
-                <span>{item.count}</span>
-              </div>
-              <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-                <div className={`h-full ${item.color}`} style={{ width: `${(item.count / (profile.stats.completedCount || 1)) * 100}%` }} />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-
-  const renderHistory = () => (
-    <div className="space-y-6 animate-in">
-      <div className="flex justify-between items-center">
-        <h2 className="text-xl font-bold">{t.archive}</h2>
-        <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">{profile.history.length} {t.logs}</span>
-      </div>
-      <div className="space-y-3">
-        {profile.history.length > 0 ? (
-          profile.history.map((quest, i) => (
-            <QuestCard key={i} quest={quest} onSelect={setActiveQuest} onSave={handleQuestSave} onShare={handleShare} />
-          ))
-        ) : (
-          <div className="text-center py-24 opacity-30">
-            <History size={48} className="mx-auto mb-4" />
-            <p className="font-bold text-xs tracking-widest uppercase">No past deployments</p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-
-  const togglePremium = () => {
-    setProfile(prev => ({ 
-      ...prev, 
-      isPremium: !prev.isPremium,
-      dailySkips: !prev.isPremium ? 2 : 1 // Reset counter on toggle for demo
-    }));
-  };
-
   return (
     <div className="min-h-screen max-w-2xl mx-auto p-6 pb-36">
       <header className="mb-10 flex justify-between items-start">
@@ -413,7 +351,6 @@ const App: React.FC = () => {
             <h1 className="text-2xl font-bold text-white tracking-tight">PP QUEST</h1>
             <p className="text-[9px] font-bold text-zinc-600 uppercase tracking-[0.3em]">{t.sync}</p>
           </div>
-          {/* Language Selector */}
           <div className="flex items-center gap-2 mt-2">
             <Languages size={14} className="text-zinc-500" />
             <div className="flex gap-2">
@@ -421,7 +358,7 @@ const App: React.FC = () => {
                 <button 
                   key={lang}
                   onClick={() => handleLanguageChange(lang)}
-                  className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${profile.language === lang ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-500 hover:text-zinc-300'}`}
+                  className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded transition-all ${profile.language === lang ? 'bg-zinc-100 text-zinc-900 shadow-lg' : 'text-zinc-500 hover:text-zinc-300'}`}
                 >
                   {lang}
                 </button>
@@ -430,8 +367,8 @@ const App: React.FC = () => {
           </div>
         </div>
         <button 
-          onClick={togglePremium}
-          className={`px-4 py-1.5 rounded-full text-[9px] font-bold uppercase transition-all ${profile.isPremium ? 'bg-amber-400 text-black' : 'bg-white/5 text-zinc-500'}`}>
+          onClick={() => setProfile(p => ({ ...p, isPremium: !p.isPremium, dailySkips: !p.isPremium ? 2 : 1 }))}
+          className={`px-4 py-1.5 rounded-full text-[9px] font-bold uppercase transition-all shadow-xl ${profile.isPremium ? 'bg-amber-400 text-black' : 'bg-white/5 text-zinc-500 border border-white/10'}`}>
           {profile.isPremium ? t.premium : t.goPremium}
         </button>
       </header>
@@ -462,6 +399,49 @@ const App: React.FC = () => {
       )}
     </div>
   );
+
+  function renderStats() {
+    return (
+      <div className="space-y-8 animate-in">
+        <div className="flex justify-between items-center">
+          <h2 className="text-xl font-bold">{t.stats}</h2>
+          <button onClick={() => handleShare(null, true)} className="flex items-center gap-2 px-4 py-2 glass font-bold text-xs uppercase tracking-wider border-white/10">
+            <Share2 size={16} /> {t.share}
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          {[
+            { icon: <CheckCircle className="text-emerald-400" />, val: profile.stats.completedCount, label: t.cleared },
+            { icon: <Medal className="text-blue-400" />, val: profile.stats.totalPoints, label: 'XP Points' },
+            { icon: <Zap className="text-amber-400" />, val: profile.stats.currentStreak, label: t.streak },
+            { icon: <Trophy className="text-rose-400" />, val: profile.stats.bestStreak, label: t.peak },
+          ].map((stat, i) => (
+            <div key={i} className="glass p-6 text-center space-y-2 border-white/5">
+              <div className="flex justify-center mb-1">{stat.icon}</div>
+              <p className="text-2xl font-bold">{stat.val}</p>
+              <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">{stat.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  function renderHistory() {
+    return (
+      <div className="space-y-6 animate-in">
+        <div className="flex justify-between items-center">
+          <h2 className="text-xl font-bold">{t.archive}</h2>
+          <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">{profile.history.length} {t.logs}</span>
+        </div>
+        <div className="space-y-3">
+          {profile.history.map((quest, i) => (
+            <QuestCard key={i} quest={quest} onSelect={setActiveQuest} onSave={handleQuestSave} onShare={handleShare} />
+          ))}
+        </div>
+      </div>
+    );
+  }
 };
 
 export default App;
