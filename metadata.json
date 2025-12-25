@@ -1,0 +1,8 @@
+{
+  "name": "PP Quest",
+  "description": "A fun, gamified daily quest app that gives you 4 quirky side quests twice a day to spice up your life, verified by AI.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
